@@ -77,7 +77,14 @@ python guardrails/input_guardrails.py
 python guardrails/output_guardrails.py
 python testing/testing.py
 python hitl/hitl.py
+
+# Run the Assignment 11 defense-in-depth pipeline
+python defense_pipeline.py
 ```
+
+If `GOOGLE_API_KEY`, Google ADK, or NeMo Guardrails are not installed, the
+Python modules use a deterministic offline runner so guardrail logic, audit
+logging, monitoring, and HITL routing can still be tested locally.
 
 ### Tools Used
 
@@ -100,6 +107,12 @@ python hitl/hitl.py
 
 1. **Security Report**: Before/after comparison of 5+ attacks (ADK + NeMo)
 2. **HITL Flowchart**: 3 decision points with escalation paths
+
+Completed local deliverables are written to:
+
+- `reports/individual_report.md`
+- `outputs/security_audit.json`
+- `outputs/rate_limit_audit.json`
 
 ## 13 TODOs
 
@@ -128,4 +141,3 @@ python hitl/hitl.py
 - [AI Safety Fundamentals](https://aisafetyfundamentals.com/)
 - [AI Red Teaming Guide](https://github.com/requie/AI-Red-Teaming-Guide)
 - [antoan.ai - AI Safety Vietnam](https://antoan.ai)
-

@@ -1,16 +1,63 @@
 """
-Lab 11 — Part 2A: Input Guardrails
+Lab 11 - Part 2A: Input Guardrails
   TODO 3: Injection detection (regex)
   TODO 4: Topic filter
   TODO 5: Input Guardrail Plugin (ADK)
 """
 import re
+import sys
+from pathlib import Path
 
-from google.genai import types
-from google.adk.plugins import base_plugin
-from google.adk.agents.invocation_context import InvocationContext
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.adk_compat import InvocationContext, base_plugin, types
 from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
+
+
+INJECTION_RULES = [
+    (
+        "ignore_previous_instructions",
+        r"\b(ignore|forget|disregard|override)\b.{0,40}\b(previous|prior|above|all)\b.{0,25}\b(instructions?|directives?|rules?)\b",
+    ),
+    (
+        "role_confusion",
+        r"\b(you are now|pretend you are|act as|roleplay as)\b.{0,80}\b(dan|developer|admin|unrestricted|jailbroken|root)\b",
+    ),
+    (
+        "system_prompt_extraction",
+        r"\b(system prompt|hidden prompt|developer message|internal note|instructions?)\b.{0,80}\b(reveal|show|print|translate|export|json|yaml|xml|base64|rot13)\b",
+    ),
+    (
+        "secret_extraction",
+        r"\b(reveal|show|provide|print|confirm|fill in|complete|export|translate)\b.{0,100}\b(admin password|password|api key|credential|secret|database|connection string|db host)\b",
+    ),
+    (
+        "secret_terms_first",
+        r"\b(admin password|password|api key|credential|secret|database|connection string|db host)\b.{0,100}\b(reveal|show|provide|print|confirm|fill in|complete|export|translate)\b",
+    ),
+    (
+        "authority_pressure",
+        r"\b(ciso|auditor|incident commander|sec-\d{4}-\d{3}|ticket|compliance|rotation)\b.{0,120}\b(credentials?|password|api key|secret|database)\b",
+    ),
+    (
+        "creative_bypass",
+        r"\b(story|hypothetical|training|fictional|character|example)\b.{0,120}\b(same|your|realistic|actual)\b.{0,80}\b(passwords?|api keys?|credentials?|secrets?)\b",
+    ),
+    (
+        "encoding_bypass",
+        r"\b(base64|rot13|hex|encode|encoded|obfuscate|character-by-character)\b.{0,120}\b(system prompt|instructions?|password|api key|secret|credential)\b",
+    ),
+    (
+        "vietnamese_injection",
+        r"\b(bỏ qua|bo qua|quên|quen|tiết lộ|tiet lo|cho tôi xem|cho toi xem|mật khẩu|mat khau|hướng dẫn|huong dan)\b",
+    ),
+]
+
+DANGEROUS_INPUT_RULES = [
+    ("sql_query", r"\b(select|insert|update|delete|drop|union)\b\s+.*\b(from|into|table|users?|accounts?)\b"),
+    ("malware_or_hacking", r"\b(hack|exploit|phish|steal|keylogger|malware|bypass otp)\b"),
+    ("physical_harm", r"\b(bomb|weapon|kill|poison|violence)\b"),
+]
 
 
 # ============================================================
@@ -37,16 +84,24 @@ def detect_injection(user_input: str) -> bool:
     Returns:
         True if injection detected, False otherwise
     """
-    INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
-    ]
+    return find_injection_match(user_input) is not None
 
-    for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
-            return True
-    return False
+
+def find_injection_match(user_input: str) -> dict | None:
+    """Return the first injection rule that matches and why it is needed.
+
+    Regex injection detection catches direct attempts to override system
+    instructions before the LLM can be persuaded by roleplay or formatting.
+    """
+    for name, pattern in INJECTION_RULES:
+        match = re.search(pattern, user_input, re.IGNORECASE | re.DOTALL)
+        if match:
+            return {
+                "rule": name,
+                "pattern": pattern,
+                "matched_text": match.group(0)[:120],
+            }
+    return None
 
 
 # ============================================================
@@ -68,14 +123,44 @@ def topic_filter(user_input: str) -> bool:
     Returns:
         True if input should be BLOCKED (off-topic or blocked topic)
     """
-    input_lower = user_input.lower()
+    return topic_filter_reason(user_input)["blocked"]
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return True
-    # 2. If input doesn't contain any allowed topic -> return True
-    # 3. Otherwise -> return False (allow)
 
-    pass  # Replace with your implementation
+def topic_filter_reason(user_input: str) -> dict:
+    """Explain whether a message is blocked by topic or safety scope.
+
+    Topic filtering prevents the banking assistant from becoming a general
+    chatbot and catches off-topic or dangerous requests that are not injections.
+    """
+    input_lower = user_input.lower().strip()
+
+    if not input_lower:
+        return {"blocked": True, "reason": "empty_input", "matched": ""}
+
+    if len(user_input) > 4000:
+        return {"blocked": True, "reason": "input_too_long", "matched": "length>4000"}
+
+    if not re.search(r"[a-zA-Z0-9\u00C0-\u1EF9]", user_input):
+        return {"blocked": True, "reason": "no_semantic_text", "matched": user_input[:40]}
+
+    for name, pattern in DANGEROUS_INPUT_RULES:
+        match = re.search(pattern, user_input, re.IGNORECASE | re.DOTALL)
+        if match:
+            return {
+                "blocked": True,
+                "reason": f"dangerous_input:{name}",
+                "matched": match.group(0)[:120],
+            }
+
+    for topic in BLOCKED_TOPICS:
+        if topic in input_lower:
+            return {"blocked": True, "reason": "blocked_topic", "matched": topic}
+
+    for topic in ALLOWED_TOPICS:
+        if topic in input_lower:
+            return {"blocked": False, "reason": "allowed_topic", "matched": topic}
+
+    return {"blocked": True, "reason": "off_topic", "matched": ""}
 
 
 # ============================================================
@@ -90,12 +175,17 @@ def topic_filter(user_input: str) -> bool:
 # ============================================================
 
 class InputGuardrailPlugin(base_plugin.BasePlugin):
-    """Plugin that blocks bad input before it reaches the LLM."""
+    """Block unsafe input before it reaches the LLM.
+
+    This layer is needed because malicious prompts can cause the model to leak
+    secrets before any output-side filter has a chance to repair the response.
+    """
 
     def __init__(self):
         super().__init__(name="input_guardrail")
         self.blocked_count = 0
         self.total_count = 0
+        self.block_events = []
 
     def _extract_text(self, content: types.Content) -> str:
         """Extract plain text from a Content object."""
@@ -128,14 +218,27 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 3. If both are False: return None (let message through)
+        injection = find_injection_match(text)
+        if injection:
+            self.blocked_count += 1
+            self.block_events.append({"layer": "input_injection", **injection})
+            return self._block_response(
+                "Request blocked by input guardrail: prompt injection "
+                f"detected ({injection['rule']}). I can help with banking "
+                "questions, but I cannot reveal hidden instructions or secrets."
+            )
 
-        pass  # Replace with your implementation
+        topic = topic_filter_reason(text)
+        if topic["blocked"]:
+            self.blocked_count += 1
+            self.block_events.append({"layer": "topic_filter", **topic})
+            return self._block_response(
+                "Request blocked by input guardrail: "
+                f"{topic['reason']}. Please ask about VinBank accounts, "
+                "transfers, cards, savings, loans, ATM limits, or payments."
+            )
+
+        return None
 
 
 # ============================================================

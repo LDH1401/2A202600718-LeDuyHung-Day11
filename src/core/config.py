@@ -1,15 +1,23 @@
 """
-Lab 11 — Configuration & API Key Setup
+Lab 11 - Configuration & API Key Setup
 """
 import os
 
 
 def setup_api_key():
-    """Load Google API key from environment or prompt."""
+    """Load Google API key or continue in offline simulation mode.
+
+    Offline mode is useful for local guardrail testing because most lab
+    requirements are deterministic safety checks, not model-quality claims.
+    """
     if "GOOGLE_API_KEY" not in os.environ:
-        os.environ["GOOGLE_API_KEY"] = input("Enter Google API Key: ")
+        if os.environ.get("LAB11_REQUIRE_API_KEY") == "1":
+            os.environ["GOOGLE_API_KEY"] = input("Enter Google API Key: ")
+        else:
+            print("GOOGLE_API_KEY not set; using offline simulated agent where possible.")
     os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "0"
-    print("API key loaded.")
+    if "GOOGLE_API_KEY" in os.environ:
+        print("API key loaded.")
 
 
 # Allowed banking topics (used by topic_filter)
